@@ -1,0 +1,444 @@
+---
+title: "Reanalysis of Sanchez-Baracaldo et al. 2017"
+author: "Teofil Nakov, James Boyko, Andrew Alverson, Jeremy Beaulieu"
+date: "`r Sys.Date()`"
+output:
+  pdf_document:
+    toc: true
+    toc_depth: 4
+    highlight:  zenburn
+urlcolor: blue
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = FALSE, eval = TRUE, cache = FALSE, results="hide", message=FALSE, warning=FALSE)
+```
+
+## Data files
+
+We use two datasets provided in the data package of [Sanches-Baracaldo et al. 2017](http://www.pnas.org/content/114/37/E7737) available on [DataDryad](http://datadryad.org/resource/doi:10.5061/dryad.421p2). The first one is an `XML` file used as input to `SIMMAP`, the second one is a `nexus` file. The habitat data from these files were parsed in `bash` before loading into R for ancestral state reconstruction.
+
+<!-- ```{bash, eval=FALSE} -->
+<!-- # XML file -->
+<!-- grep -A119 "ntaxa" pb_habitat.xlm | tr -s " " | cut -d '"' -f 2,3 |\ -->
+<!-- tr '"><' ' ' | tr -s " " | cut -d " " -f1,2 | grep -v "nchars" > nexml-data -->
+
+<!-- # Nexus file (species names capitalized) -->
+<!-- grep -A119 "MATRIX" Fig_4_data\&tree.nex | tr -s " " | cut -f 2,3 |\ -->
+<!-- grep -v MATRIX | awk '{print tolower($0)}' > nexus-data -->
+<!-- ``` -->
+
+<!-- We can compare these files in `bash` by running the following command that joins the two files by species name and looks for cases where the coding of habitat differs between the two datasets, printing "YES", or "NO" when the coded salinity matches and doesn't match, respectivelly.  -->
+
+<!-- ```{bash, eval=FALSE} -->
+<!-- join nexus-data nexml-data |\ -->
+<!-- awk '{if ($2==$3) print $0, "YES"; else print $0, "NO"}' | grep "NO" -->
+<!-- ``` -->
+
+<!-- Here we `grep` for the mismatches. Two species coded with "2" corresponding to Brackish habitat in the `XML` file are coded as "1" or Marine in the `nexus` daatset, and one species coded as marine ("1") in the `nexus` dataset is coded as freshwater ("0") in the `XML` dataset. -->
+
+There are three differences between the two dataset. Two species coded with "2" corresponding to Brackish habitat in the `XML` file are coded as "1" or Marine in the `nexus` daatset, and one species coded as marine ("1") in the `nexus` dataset is coded as freshwater ("0") in the `XML` dataset.
+
+```
+synechococcus_pcc7002 1 2 NO
+nostoc_pcc7120 1 0 NO
+cyanobium_pcc7001 1 2 NO
+```
+
+## Packages
+
+To reconstruct ancestral states, we use two packages: `phytools` for stochastic mapping, and `corHMM` for maximum likelihood reconstructions. The package versions are below, see also the `sessionInfo()` output at the bottom of this document.
+
+```{r}
+library("phytools")
+#packageVersion("phytools")
+library("corHMM")
+#packageVersion("corHMM")
+library("tidyverse") # to plot and stuff
+library("knitr") # for tables
+library("viridis") # for colors
+```
+
+## Analyses
+### SIMMAP with three-state coding
+
+```{r}
+# load the tree and ladderize
+tree <- read.nexus("Sanchez-Baracaldo_etal_2017_Data/3_Habitat/Figure_4/Fig_4_data&tree.nex")
+tree <- ladderize(tree, right = FALSE)
+
+# load the data from the parsed `XML` file
+from.xml <- read.table("Sanchez-Baracaldo_etal_2017_Data/hab/nexml-data", header=FALSE, sep=" ")
+# create a named vector for habitat
+tri.state <- setNames(from.xml$V2, from.xml$V1)
+# frequency table
+table(tri.state)
+
+# Habitat (salinity) is coded like so:
+# 0 = freshwater
+# 1 = marine
+# 2 = brackish
+
+# make another tree object, with tip labels 
+# lowercase to match the species names in the XML data file
+tree2 <- tree
+tree2$tip.label <- tolower(tree2$tip.label)
+# check that all species in the tree are found in the named vector for habitat
+sum(tree2$tip.label %in% names(tri.state)) == Ntip(tree)
+
+# some colors for plots
+Cols <- c('0'="orange", '1'="grey", '2'="red")
+```
+
+#### Equal rates model 
+
+We first performed stochastic character mappping (SIMMAP) assuming _equal rates_ of transition between marine, brackish, and fresh waters. The prior for the root is set to `equal` to match the methods in the original paper. This means that all states have the same prior probability at the root. We simulated 1000 stochastic maps and summarized the output with functions from the `phytools` package.
+
+```{r}
+NSIM <- 1000
+set.seed(20170921)
+# ER
+tri.er <- make.simmap(tree = tree2, x = tri.state, model = "ER", nsim = NSIM, pi="equal")
+# summarise the stochastic maps
+tri.er.sum <- summary(tri.er)
+```
+
+The nodes relevant for the reconstruction of the ecology of the primary chloroplast endosymbiosis are the root, the most-recent common ancestor (MRCA) of the cyanobacerium _Gloeomargarita_ and Archaeplastida (glaucophytes, red 'algae' and green 'algae' + land plants) and the MRCA of Archaeplastida themselves. The probabilities for different ancestral habitats under the _equal rates_ model (summarized from 1000 stochastic maps) were as follows:
+
+```{r, results='show'}
+knitr::kable(data.frame("P(freshwater)"=tri.er.sum$ace[c(1,6,7),1],
+                        "P(marine)"=tri.er.sum$ace[c(1,6,7),2],
+                        "P(brackish)"=tri.er.sum$ace[c(1,6,7),3],
+                        row.names = c("Root", "MRCA Gloeomargarita + Archaeplastida", 
+                                      "MRCA Archaeplastida")), 
+             caption="Probabilities for Freshwater, Marine, and Brackish ancestry for three 
+             nodes on the Cyanobacteria + Archaeplastida phylogeny")
+```
+
+These results confirm the finding of Sanchez-Baracaldo et al. 2017. Under the assumption that all possible transitions between freshwater, brackish, and marine habitats happen at the same rate, the most likely habitat for the MRCAs of Cyanobacteria and Archaeplastida are fresh waters [<0.5 parts per thousand (ppt) salinity].
+
+#### All rates different model
+
+It is possible, however, that transitions between these three habitats happen at different rates, perhaps as a result of cellular physiological constraints. Marine and fresh waters, after all, differ drastically in many important ways, including concentrations of salts and other ions, osmotic pressure, nutrient regimes, and so on. It is therefore possible that certain types of transitions occur more frequently than others. For example, transitions between brackish (0.5-30 ppt) and marine habitats (> 30 ppt as coded in Sanchez-Baracaldo et al. 2017), might be more frequent over evolutionary time than direct transitions between freshwater and marine environments. It is also possible that such direct marine-to-freshwater (or the reverse) transition are highly unlikely or impossible. 
+
+We therefore examined models that allowed these transitions to vary. In these models, the different transition rates are independently estimated, and importantly, if two evolutionary transitions indeed have similar rates, these models are able to detect that and return similar parameter estimates. We simulated 1000 stochastic character histories using a model with _unequal rates_, and as before, assumed that the prior state at the root can be either of the states observed at the tips with equal probability.
+
+```{r}
+# ARD unordered
+tri.ard <- make.simmap(tree = tree2, x = tri.state, model = "ARD", nsim = NSIM, pi="equal")
+tri.ard.sum <- summary(tri.ard)
+```
+
+As before, we summarized the probabilities for different ancestral states at the three relevant nodes. We found that the most likely ancestral habitat, for each of the relevant nodes, was now completely reversed. The probability for the fresh water state went down and probability for marine or brackish ancestry went up after we accounted for different rates of transition between states.
+
+```{r, results='show'}
+knitr::kable(data.frame("P(freshwater)"=tri.ard.sum$ace[c(1,6,7),1],
+                        "P(marine)"=tri.ard.sum$ace[c(1,6,7),2],
+                        "P(brackish)"=tri.ard.sum$ace[c(1,6,7),3],
+                        row.names = c("Root", "MRCA Gloeomargarita + Archaeplastida", 
+                                      "MRCA Archaeplastida")),
+             digits=3,
+             caption="Probabilities for Freshwater, Marine, and Brackish ancestry for three 
+             nodes on the Cyanobacteria + Archaeplastida phylogeny")
+```
+
+\clearpage
+
+```{r, fig.width=7, fig.height=9, fig.cap="Comparison of ancestral states reconstructed with an equal rates (ER, left) and all-rates-different (ARD, right) model. The relevant nodes are labeled: R=root, G+A=Gloeomargarita+Archaeplastida, A=Archaeplastida. Each plot is a summary of 1000 stochastic characte maps."}
+pie.size <- c(1.5, rep(0.6, 5), 1.5, rep(0.6, 111))
+
+par(mfrow=1:2, mar=rep(0.5,4), lend=2, lwd=.4)
+# plot
+plot(tri.er.sum, fsize=.4, colors=Cols, lwd=.3, ftype="reg", cex=.9)
+nodelabels(node = 119+c(1,6,7), adj=c(1.1,-1), bg="white", 
+           text = c("R", "G+A", "A"))
+add.simmap.legend(leg = c("Freshwater", "Marine", "Brackish"), 
+                  colors = Cols, prompt = FALSE, x=0, y=115)
+title("Equal rates model", line=-1, adj=0)
+plot(tri.ard.sum, fsize=.4, colors=Cols, lwd=.3, ftype="reg", cex=.9)
+nodelabels(node = 119+c(1,6,7), adj=c(1.1,-1), bg="white", 
+           text = c("R", "G+A", "A"))
+title("Unequal rates model", line=-1, adj=0)
+```
+
+\clearpage
+
+### corHMM with three-state coding
+
+Next we performed ancestral state reconstructions with a broader set of models under maximum likelihood. We fit the unordered models used above and ordered models in which transitions from marine to freshwater, or the reverse, have to pass through an intermediary brackish state. In both cases we have models with equal and unequal transition rates and we set the acenstral state reconstruction to provide marginal probabilities. 
+
+```{r}
+# make a data frame for `corHMM`
+salt.tri.state <- data.frame(Names=from.xml$V1, 
+                             Salinity=from.xml$V2, 
+                             stringsAsFactors = FALSE)
+# fit the four models
+# UNordered equal rates model
+ER.unord <- rayDISC(phy = tree2, data = salt.tri.state, model = "ER", 
+                    node.states = "marginal", root.p = "maddfitz")
+# Unordered all-rates-different model
+ARD.unord <- rayDISC(phy = tree2, data = salt.tri.state, model = "ARD", 
+                     node.states = "marginal", root.p = "maddfitz")
+# make an ordered rate matrix with equal rates
+# dropping the disallowed marine-to-freshwater and freshwater-to-marine parameters 
+ord.er <- rate.mat.maker(rate.cat=1, hrm=FALSE, ntraits=1, nstates=3, model="ER")
+ord.er[2,1] <- NA
+ord.er[1,2] <- NA
+# ORDERED equal rates model
+ER.ord <-  rayDISC(phy = tree2, data = salt.tri.state,model = "ER", 
+                   rate.mat = ord.er, node.states = "marginal", root.p = "maddfitz")
+# make an ordered rate matrix with unequal rates
+# dropping the disallowed marine-to-freshwater and freshwater-to-marine parameters 
+ord.ard <- rate.mat.maker(rate.cat=1, hrm=FALSE, ntraits=1, nstates=3, model="ARD")
+ord.ard <- rate.par.drop(ord.ard, drop.par = c(1,3))
+# ORDERED all-rates-different model
+ARD.ord <- rayDISC(phy = tree2, data = salt.tri.state, model="ARD", 
+                   rate.mat = ord.ard, node.states = "marginal", root.p = "maddfitz")
+```
+
+We compared these models using the Akaike Information Criterion corrected for sample size (AICc) and calculate Akaike weights (relative model likelihoods). We find that models that account for unequal rates are strongly favored while models with rates fixed to be equal (e.g., marine-to-freshwater = freshwater-to-marine) provide a poor fit to the data (Akaike weights close to zero). 
+
+```{r, results='show'}
+# compare
+liks <- sapply(list(ER.unord, ER.ord, ARD.unord, ARD.ord), "[[", "loglik")
+aicc <- sapply(list(ER.unord, ER.ord, ARD.unord, ARD.ord), "[[", "AICc")
+result <- data.frame(Model =c("ER.unord", "ER.ord", "ARD.unord", "ARD.ord"), 
+                     lnL=liks, AICc=aicc, delta_AICc=aicc-min(aicc)) 
+result$AICc_w <- exp(-0.5*result$delt)/sum(exp(-0.5*result$delt))
+
+knitr::kable(result, digits = 3, 
+             caption="Comparison of ordered and unordered models
+             with equal or unequal transition rates.
+             Models allowing rates to vary provide much better fit to the data.")
+
+```
+
+```{r}
+# compare just unordered models
+result2  <- data.frame(Model =c("ER.unord", "ARD.unord"), 
+                     lnL=liks[c(1,3)], AICc=aicc[c(1,3)], delta_AICc=aicc[c(1,3)]-min(aicc[c(1,3)])) 
+result2$AICc_w <- exp(-0.5*result2$delt)/sum(exp(-0.5*result2$delt))
+```
+
+
+Probabilities for ancestral states with different models:
+
+```{r}
+Probs <- data.frame(
+  Node=rep(c("Root", 
+             "MRCA Gloeomargarita + Archaeplastida", 
+             "MRCA Archaeplastida"), times=4),
+  Model=rep(c("ER unordered", "ER ordered", "ARD unordered", "ARD ordered"), each=3),
+  "Freshwater"=c(ER.unord$states[c(1,6,7),1],ER.ord$states[c(1,6,7),1],
+                    ARD.unord$states[c(1,6,7),1],ARD.ord$states[c(1,6,7),1]),
+  "Marine"=c(ER.unord$states[c(1,6,7),2],ER.ord$states[c(1,6,7),2],
+                ARD.unord$states[c(1,6,7),2],ARD.ord$states[c(1,6,7),2]),
+  "Brackish"=c(ER.unord$states[c(1,6,7),3],ER.ord$states[c(1,6,7),3],
+                  ARD.unord$states[c(1,6,7),3],ARD.ord$states[c(1,6,7),3])
+  )
+
+# knitr::kable(Probs, digits=3, 
+#              caption="Probabilities for Freshwater, Marine, and Brackish ancestry for three 
+#              nodes on the Cyanobacteria + Archaeplastida phylogeny")
+```
+
+```{r, fig.width=11, fig.cap="Probabilities for Freshwater, Marine, and Brackish ancestry for three nodes on the Cyanobacteria + Archaeplastida phylogeny using different models of habitat transitions. Models allowing transition rates to vary support marine ancestry, while freshwater anestry is more likely only under the unordered equal-rates model."}
+Probs %>% 
+  group_by(Node, Model) %>% 
+  gather(State, Probability, Freshwater:Brackish) %>% 
+  mutate(Habitat=factor(State, levels=c("Freshwater", "Brackish", "Marine"))) %>% 
+ggplot(data=., aes(x=Habitat, y=Probability, group=Model, colour=Model)) + 
+  geom_line(size=.6) + 
+  geom_point(pch=21, size=2, stroke=1.5) + 
+  facet_wrap(~Node) +
+  theme_bw()+
+  theme(legend.position="top") +
+  scale_colour_viridis(discrete = TRUE, alpha=.8)
+```
+
+```{r, result="show", warning=FALSE}
+# rates
+A <- c("freshwater", "marine", "brackish")
+B <- expand.grid(A,A) %>% mutate(Param=paste(Var1, "to", Var2, sep="-"))
+C <- data.frame(B, 
+                "ER.unord"=as.vector(ER.unord$solution), 
+                "ER.ord"=as.vector(ER.ord$solution), 
+                "ARD.unord"=as.vector(ARD.unord$solution), 
+                "ARD.ord"=as.vector(ARD.ord$solution))
+D <- C %>% filter(!(Var1==Var2)) %>% select(-Var1, -Var2)
+```
+
+The maximum likelihood estimates of the rates are show that the marine-to-freshwater transition rate is  0.367 per lineage per billion years, whereas the reverse, freshwater-to-marine rate is much lower at 0.16 events per lineage per billion years (all-rates-different, unordered model). If the history of transitions between marine and freshwaters on this phylogeny was consistent with the equal rates model, we would expect these two parameter estimates to be much closer even though the all-rates-different model estimated them independently. 
+
+The best model over all was a model with different parameters for each transition ordered in a way that disallows direct marine-to-freshwater or freshwater-to-marine shifts (i.e., freshwater <-> brackish <-> marine; Table 3). However, the optimization of this model results with poor parameter estimates, with transitions from brackish to marine (q=100, hitting the upper bound in `corHMM::rayDisc`) and from brackish to freshwater (q=13.7) unrealistically high. This is because the brackish state in this dataset is very rare (2 out of 119 taxa). 
+
+```{r, results="show", warning=FALSE}
+knitr::kable(D, digits=3, caption="Transition rate estimates between marine, freshwater, and brackish habitats under different models.")
+```
+
+### SIMMAP with two-state coding
+
+```{r}
+# load the tree and ladderize
+tree <- read.nexus("Sanchez-Baracaldo_etal_2017_Data/3_Habitat/Figure_4/Fig_4_data&tree.nex")
+tree <- ladderize(tree, right = FALSE)
+
+# load the data from the parsed `XML` file
+from.nex <- read.table("Sanchez-Baracaldo_etal_2017_Data/hab/nexus-data", header=FALSE, sep=" ")
+# create a named vector for habitat
+two.state <- setNames(from.nex$V2, from.nex$V1)
+# frequency table
+table(two.state)
+
+# Habitat (salinity) is coded like so:
+# 0 = freshwater
+# 1 = marine
+
+# make another tree object, with tip labels 
+# lowercase to match the species names in the XML data file
+tree2 <- tree
+tree2$tip.label <- tolower(tree2$tip.label)
+# check that all species in the tree are found in the named vector for habitat
+sum(tree2$tip.label %in% names(two.state)) == Ntip(tree)
+
+# some colors for plots
+Cols <- c('0'="orange", '1'="grey")
+```
+
+#### Equal rates model 
+
+```{r}
+# ER
+two.er <- make.simmap(tree = tree2, x = two.state, model = "ER", nsim = NSIM, pi="equal")
+# summarise the stochastic maps
+two.er.sum <- summary(two.er)
+```
+
+```{r, results='show'}
+knitr::kable(data.frame("P(freshwater)"=two.er.sum$ace[c(1,6,7),1],
+                        "P(marine)"=two.er.sum$ace[c(1,6,7),2],
+                        row.names = c("Root", "MRCA Gloeomargarita + Archaeplastida", 
+                                      "MRCA Archaeplastida")), 
+             caption="Probabilities for Freshwater and Marine ancestry for three 
+             nodes on the Cyanobacteria + Archaeplastida phylogeny")
+```
+
+#### All rates different model 
+
+```{r}
+# ER
+two.ard <- make.simmap(tree = tree2, x = two.state, model = "ARD", nsim = NSIM, pi="equal")
+# summarise the stochastic maps
+two.ard.sum <- summary(two.ard)
+```
+
+```{r, results='show'}
+knitr::kable(data.frame("P(freshwater)"=two.ard.sum$ace[c(1,6,7),1],
+                        "P(marine)"=two.ard.sum$ace[c(1,6,7),2],
+                        row.names = c("Root", "MRCA Gloeomargarita + Archaeplastida", 
+                                      "MRCA Archaeplastida")), 
+             caption="Probabilities for Freshwater and Marine ancestry for three 
+             nodes on the Cyanobacteria + Archaeplastida phylogeny")
+```
+
+\clearpage 
+
+```{r, fig.width=7, fig.height=9, fig.cap="Comparison of ancestral states reconstructed with an equal rates (ER, left) and all-rates-different (ARD, right) model. The relevant nodes are labeled: R=root, G+A=Gloeomargarita+Archaeplastida, A=Archaeplastida. Each plot is a summary of 1000 stochastic characte maps."}
+pie.size <- c(1.5, rep(0.6, 5), 1.5, rep(0.6, 111))
+
+par(mfrow=1:2, mar=rep(0.5,4), lend=2, lwd=.4)
+# plot
+plot(two.er.sum, fsize=.4, colors=Cols, lwd=.3, ftype="reg", cex=.9)
+nodelabels(node = 119+c(1,6,7), adj=c(1.1,-1), bg="white", 
+           text = c("R", "G+A", "A"))
+add.simmap.legend(leg = c("Freshwater", "Marine"), 
+                  colors = Cols, prompt = FALSE, x=0, y=115)
+title("Equal rates model", line=-1, adj=0)
+plot(two.ard.sum, fsize=.4, colors=Cols, lwd=.3, ftype="reg", cex=.9)
+nodelabels(node = 119+c(1,6,7), adj=c(1.1,-1), bg="white", 
+           text = c("R", "G+A", "A"))
+title("Unequal rates model", line=-1, adj=0)
+```
+
+### corHMM with two-state coding
+
+```{r}
+# make a data frame for `corHMM`
+salt.two.state <- data.frame(Names=from.nex$V1, 
+                             Salinity=from.nex$V2, 
+                             stringsAsFactors = FALSE)
+# fit the four models
+# UNordered equal rates model
+ER.unord <- rayDISC(phy = tree2, data = salt.two.state, model = "ER", 
+                    node.states = "marginal", root.p = "maddfitz")
+# Unordered all-rates-different model
+ARD.unord <- rayDISC(phy = tree2, data = salt.two.state, model = "ARD", 
+                     node.states = "marginal", root.p = "maddfitz")
+```
+
+```{r, results='show'}
+# compare
+liks <- sapply(list(ER.unord, ARD.unord), "[[", "loglik")
+aicc <- sapply(list(ER.unord, ARD.unord), "[[", "AICc")
+result <- data.frame(Model =c("ER.unord", "ARD.unord"), 
+                     lnL=liks, AICc=aicc, delta_AICc=aicc-min(aicc)) 
+result$AICc_w <- exp(-0.5*result$delt)/sum(exp(-0.5*result$delt))
+
+knitr::kable(result, digits = 3, 
+             caption="Comparison of unordered models
+             with equal or unequal transition rates.
+             Models allowing rates to vary provide much better fit to the data.")
+
+```
+
+Probabilities for ancestral states with different models:
+
+```{r}
+Probs <- data.frame(
+  Node=rep(c("Root", 
+             "MRCA Gloeomargarita + Archaeplastida", 
+             "MRCA Archaeplastida"), times=2),
+  Model=rep(c("Equal-rates", "Unequal-rates"), each=3),
+  "Freshwater"=c(ER.unord$states[c(1,6,7),1],
+                    ARD.unord$states[c(1,6,7),1]),
+  "Marine"=c(ER.unord$states[c(1,6,7),2],
+                ARD.unord$states[c(1,6,7),2])
+  )
+```
+
+```{r, fig.width=11, fig.cap="Probabilities for Freshwater and Marine ancestry for three nodes on the Cyanobacteria + Archaeplastida phylogeny using different models of habitat transitions. Models allowing transition rates to vary support marine ancestry, while freshwater anestry is more likely only under the unordered equal-rates model."}
+Probs %>% 
+  group_by(Node, Model) %>% 
+  gather(State, Probability, Freshwater:Marine) %>% 
+  mutate(Habitat=factor(State, levels=c("Freshwater", "Marine"))) %>% 
+ggplot(data=., aes(x=Habitat, y=Probability, group=Model, colour=Model)) + 
+  geom_line(size=.6) + 
+  geom_point(pch=21, size=2, stroke=1.5) + 
+  facet_wrap(~Node) +
+  theme_bw()+
+  theme(legend.position="top") +
+  scale_colour_viridis(discrete = TRUE, alpha=.8)
+```
+
+```{r}
+# rates
+A <- c("freshwater", "marine")
+B <- expand.grid(A,A) %>% mutate(Param=paste(Var1, "to", Var2, sep="-"))
+C <- data.frame(B, 
+                "ER.unord"=as.vector(ER.unord$solution), 
+                "ARD.unord"=as.vector(ARD.unord$solution))
+D <- C %>% filter(!(Var1==Var2)) %>% select(-Var1, -Var2)
+```
+
+
+```{r, results="show", warning=FALSE}
+knitr::kable(D, digits=3, caption="Transition rate estimates between marine and freshwater habitats under different models.")
+```
+
+
+\clearpage
+
+```{r}
+sessionInfo()
+```
+

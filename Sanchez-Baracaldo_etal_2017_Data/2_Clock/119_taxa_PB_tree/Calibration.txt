@@ -1,0 +1,19 @@
+17
+Pseudanabaena_PCC7429 Leptolyngbya_PCC7376    -1   1900
+Fischerella_JSC11    Nodularia_CCY9414       1888  1600
+Pleurocapsa_PCC7327  Prochloron_Fiji         1888  1700
+Richelia_HH01      Richelia_HM01              -1   110
+Cyanidioschyzon    Porphyra_pur               -1   1050
+Synedra            Phaeodactylum              -1   110
+Odontella          Thalassiosira              -1   250
+Gracilaria         Porphyra_pur               -1   600
+Pseudendoclonium   Oltmannsiellopsis          -1   635
+Zygnema            Staurastrum                -1   345
+Chaetosphaeridium  Spinacia                   501  -1
+Marchantia       Spinacia                     -1   470   
+Psilotum        Nymphaea                      -1   446
+Cycas          Spinacia                       -1   385
+Pinus_contorta          Cycas                 -1   385
+Nymphaea       Spinacia                       -1   130
+Ranunculus    Spinacia                        -1   125
+
